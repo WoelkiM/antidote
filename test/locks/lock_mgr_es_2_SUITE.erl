@@ -19,7 +19,7 @@
 %% -------------------------------------------------------------------
 -module(lock_mgr_es_2_SUITE).
 
--compile({parse_transform, lager_transform}).
+%-compile({parse_transform, lager_transform}).
 
 %% common_test callbacks
 -export([init_per_suite/1,
@@ -62,8 +62,8 @@
 -include_lib("common_test/include/ct.hrl").
 -include_lib("eunit/include/eunit.hrl").
 -include_lib("kernel/include/inet.hrl").
--include("../include/antidote.hrl").
--include("../include/inter_dc_repl.hrl").
+-include("../../include/antidote.hrl").
+-include("../../include/inter_dc_repl.hrl").
 
 
 

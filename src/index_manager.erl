@@ -36,6 +36,7 @@
 -module(index_manager).
 -behaviour(gen_server).
 
+-include_lib("kernel/include/logger.hrl").
 -include("querying.hrl").
 
 -define(PINDEX_ENTRY_DT, antidote_crdt_register_lww).
@@ -119,7 +120,7 @@ start_link() ->
     gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
 
 init([]) ->
-    lager:info("Started Index Manager at node ~p", [node()]),
+    ?LOG_INFO("Started Index Manager at node ~p", [node()]),
     {ok, #state{}}.
 
 handle_call({read_index, primary, TName, TxId}, _From, State) ->

@@ -62,11 +62,11 @@
 
 %% Public API
 
--spec start() -> {ok, _} | {error, term()}.
+-spec start() -> {ok, [atom()]} | {error, reason()}.
 start() ->
     application:ensure_all_started(antidote).
 
--spec stop() -> ok.
+-spec stop() -> ok | {error, reason()}.
 stop() ->
     application:stop(antidote).
 
@@ -134,7 +134,7 @@ unregister_hook(Prefix, Bucket) ->
 -spec start_transaction(Clock::snapshot_time(), Properties::txn_properties())
                        -> {ok, txid()} | {error, reason()}.
 start_transaction(Clock, Properties) ->
-    cure:start_transaction(Clock, Properties, false).
+    cure:start_transaction(Clock, Properties).
 
 -spec abort_transaction(TxId::txid()) -> ok | {error, reason()}.
 abort_transaction(TxId) ->
@@ -149,24 +149,14 @@ commit_transaction(TxId) ->
 -spec read_objects(Objects::[bound_object()], TxId::txid())
                   -> {ok, [term()]} | {error, reason()}.
 read_objects(Objects, TxId) ->
-    case type_check(Objects, fun type_check_read/1) of
-        ok ->
-            cure:read_objects(Objects, TxId);
-        {error, Reason} ->
-            {error, Reason}
-    end.
+    cure:read_objects(Objects, TxId).
 
 -spec read_objects(snapshot_time() | ignore, txn_properties(), [bound_object()])
                   -> {ok, list(), vectorclock()} | {error, reason()}.
 read_objects(Clock, Properties, Objects) ->
-    case type_check(Objects, fun type_check_read/1) of
-        ok ->
-            cure:read_objects(Clock, Properties, Objects);
-        {error, Reason} ->
-            {error, Reason}
-    end.
+    cure:read_objects(Clock, Properties, Objects).
 
-%%%%%%%%%%%%%%%%%%% QUERY ZONE %%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%% QUERY ZONE %%%%%%%%%%%%%%%%%%%
 
 -spec query_objects(filter(), txid()) -> {ok, [term()]} | {error, term()}.
 query_objects(Filter, TxId) ->
@@ -181,27 +171,23 @@ query_objects(Filter, TxId) ->
 get_objects(Clock, Objects, Properties) ->
     cure:get_objects(Clock, Objects, Properties).
 
--spec update_objects([{bound_object(), op_name(), op_param()} | {bound_object(), {op_name(), op_param()}}], txid())
+-spec update_objects([{bound_object(), op_name(), op_param()}], txid())
                     -> ok | {error, reason()}.
 update_objects(Updates, TxId) ->
-    case type_check(Updates, fun type_check_update/1) of
+    case type_check(Updates) of
         ok ->
-            {ok, AddUpdates} = index_manager:create_index_hooks(Updates),
-            NewUpdates = lists:append(Updates, AddUpdates),
-            cure:update_objects(NewUpdates, TxId);
+            cure:update_objects(Updates, TxId);
         {error, Reason} ->
             {error, Reason}
     end.
 
 %% For static transactions: bulk updates and bulk reads
--spec update_objects(snapshot_time() | ignore , txn_properties(), [{bound_object(), op_name(), op_param()}| {bound_object(), {op_name(), op_param()}}])
+-spec update_objects(snapshot_time() | ignore , txn_properties(), [{bound_object(), op_name(), op_param()}])
                      -> {ok, snapshot_time()} | {error, reason()}.
 update_objects(Clock, Properties, Updates) ->
-    case type_check(Updates, fun type_check_update/1) of
+    case type_check(Updates) of
         ok ->
-            {ok, AddUpdates} = index_manager:create_index_hooks(Updates),
-            NewUpdates = lists:append(Updates, AddUpdates),
-            cure:update_objects(Clock, Properties, NewUpdates);
+            cure:update_objects(Clock, Properties, Updates);
         {error, Reason} ->
             {error, Reason}
     end.
@@ -225,29 +211,17 @@ release_locks(Type, TxId) ->
 %%% Internal function %%
 %%% ================= %%
 
+-spec type_check_update({bound_object(), op_name(), op_param()}) -> boolean().
 type_check_update({{_K, Type, _bucket}, Op, Param}) ->
-    antidote_crdt:is_type(Type) andalso
-        Type:is_operation({Op, Param}).
+    antidote_crdt:is_type(Type)
+        andalso antidote_crdt:is_operation(Type, {Op, Param}).
 
-type_check_read({{_K, _T, _B} = BoundObject, {_Op, _Args}}) ->
-    %% TODO: Check Op is valid. It requires each CRDT to export its read operations.
-    type_check_read(BoundObject);
-type_check_read({_K, Type, _Bucket}) ->
-    antidote_crdt:is_type(Type).
-
--spec type_check([{bound_object(), op_name(), op_param()} | bound_object()], fun()) -> ok | {error, reason()}.
-type_check(Updates, TypeCheckFun) ->
-    try
-        lists:foreach(fun(Update) ->
-                              case TypeCheckFun(Update) of
-                                  true -> ok;
-                                  false -> throw({badtype, Update})
-                              end
-                      end, Updates),
-        ok
-    catch
-        _:Reason ->
-            {error, Reason}
+-spec type_check([{bound_object(), op_name(), op_param()}]) -> ok | {error, Reason :: any()}.
+type_check([]) -> ok;
+type_check([Upd|Rest]) ->
+    case type_check_update(Upd) of
+        true -> type_check(Rest);
+        false -> {error, {badtype, Upd}}
     end.
 
 -spec get_default_txn_properties() -> txn_properties().

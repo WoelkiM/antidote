@@ -59,7 +59,7 @@
         dets_info/0,
         am_i_leader/0
 ]).
-
+-include_lib("kernel/include/logger.hrl").
 -include("lock_mgr.hrl").
 -include("antidote.hrl").
 -include("inter_dc_repl.hrl").
@@ -75,8 +75,8 @@
 %% dets_ref: dets table storing received and send locks [{lock,{{send,dcid,[{to,amount}]},{received,dcid,[{from,amount}]}}}]
 -record(state, {local_locks, lock_requests, transfer_timer, dets_ref}).
 -define(LOG_UTIL, log_utilities).
-%-define(DETS_FILE_NAME, "lock_mgr_persistant_storage_"++ atom_to_list(element(1,dc_meta_data_utilities:get_my_dc_id()))++ "_" ++lists:concat(tuple_to_list(element(2,dc_meta_data_utilities:get_my_dc_id())))).
--define(DETS_FILE_NAME, filename:join(app_helper:get_env(riak_core, platform_data_dir), "lock_mgr_persistant_storage_" ++ atom_to_list(element(1, dc_meta_data_utilities:get_my_dc_id())))).
+%-define(DETS_FILE_NAME, "lock_mgr_persistant_storage_"++ atom_to_list(element(1,dc_utilities:get_my_dc_id()))++ "_" ++lists:concat(tuple_to_list(element(2,dc_utilities:get_my_dc_id())))).
+-define(DETS_FILE_NAME, filename:join(application:get_env(riak_core, platform_data_dir, undefined), "lock_mgr_persistant_storage_" ++ atom_to_list(element(1, dc_utilities:get_my_dc_id())))).
 -define(DETS_SETTINGS, [{access, read_write}, {auto_save, 180000}, {estimated_no_objects, 256}, {file, ?DETS_FILE_NAME},
                         {min_no_slots, 256}, {keypos, 1}, {ram_file, false}, {repair, true}, {type, set}]).
 -define(DC_UTIL, dc_utilities).
@@ -89,7 +89,7 @@ start_link() ->
     gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
 
 init([]) ->
-    lager:info("Started Lock manager at node ~p", [node()]),
+    ?LOG_INFO("Started Lock manager at node ~p", [node()]),
     Timer = erlang:send_after(?LOCK_TRANSFER_FREQUENCY, self(), transfer_periodic),
     {ok, Ref} = dets:open_file(?DETS_FILE_NAME, ?DETS_SETTINGS),
     {ok, #state{local_locks = orddict:new(), lock_requests=orddict:new(), transfer_timer = Timer, dets_ref = Ref}}.
@@ -160,7 +160,7 @@ required(Locks, TxId, Timestamp, Local_Locks) ->
 %% Sends remote_lock_request(Locks,0,dcid) messages to all other DCs.
 -spec required_remote([key()], [key()], txid(), erlang:timestamp(), [{txid(), {atom(), [key()], erlang:timestamp()} | {atom(), [key()]}}]) -> [{txid(), {atom(), [key()], erlang:timestamp()} | {atom(), [key()]}}].
 required_remote(Locks, Missing_Locks, TxId, Timestamp, Local_Locks) ->
-    DCID = dc_meta_data_utilities:get_my_dc_id(),
+    DCID = dc_utilities:get_my_dc_id(),
     remote_lock_request(DCID, 0, Missing_Locks),  % TODO Key value ? (currently 0)
     _New_Local_Locks = orddict:store(TxId, {required, Locks, Timestamp}, Local_Locks).
 
@@ -324,7 +324,7 @@ send_lock(Lock, To) ->
             Total_Send = lists:foldl(fun({_To, Amount}, Acc) -> Acc + Amount end, 0, Send_List),
             Total_Received = lists:foldl(fun({_From, Amount}, Acc) -> Acc + Amount end, 0, Received_List),
             Has_Lock = Total_Send < Total_Received,
-            DCID = dc_meta_data_utilities:get_my_dc_id(),
+            DCID = dc_utilities:get_my_dc_id(),
             case Has_Lock of
                 true ->
                     case lists:keyfind(To, 1, Send_List) of
@@ -354,22 +354,22 @@ send_lock(Lock, To) ->
             end;
         [] ->
             %{ok,Now} = get_snapshot_time(),
-            Now = dict:from_list([]),
+            Now = vectorlock:new(), %dict:from_list([]),
             case am_i_leader() of
                 true ->
-                    DCID = dc_meta_data_utilities:get_my_dc_id(),
+                    DCID = dc_utilities:get_my_dc_id(),
                     remote_send_lock(Lock, 1, Now, DCID, To, 0), % TODO Key value ? (currently 0)
                     dets:insert(?DETS_FILE_NAME, {Lock, {{send, DCID, [{To, 1}]}, {received, DCID, [{DCID, 1}]}}, Now});
 
                 false ->
-                    DCID = dc_meta_data_utilities:get_my_dc_id(),
+                    DCID = dc_utilities:get_my_dc_id(),
                     dets:insert(?DETS_FILE_NAME, {Lock, {{send, DCID, [{To, 0}]}, {received, DCID, []}}, Now})
             end;
 
         {error, _Reason} ->
             %{ok,Now} = get_snapshot_time(),
             Now = dict:from_list([]),
-            DCID = dc_meta_data_utilities:get_my_dc_id(),
+            DCID = dc_utilities:get_my_dc_id(),
             dets:insert(?DETS_FILE_NAME, {Lock, {{send, DCID, [{To, 0}]}, {received, DCID, []}}, Now})
         % sending the the total amount of locks again is not required here, since a lock was never send.
     end.
@@ -397,10 +397,10 @@ received_lock(Lock, From, Amount, Last_Changed) ->
                     end
             end;
         [] ->
-            MYDCID = dc_meta_data_utilities:get_my_dc_id(),
+            MYDCID = dc_utilities:get_my_dc_id(),
             dets:insert(?DETS_FILE_NAME, {Lock, {{send, MYDCID, []}, {received, MYDCID, [{From, Amount}]}}, Last_Changed});
         {error, _Reason} ->
-            DCID = dc_meta_data_utilities:get_my_dc_id(),
+            DCID = dc_utilities:get_my_dc_id(),
             dets:insert(?DETS_FILE_NAME, {Lock, {{send, DCID, []}, {received, DCID, [{From, Amount}]}}, Last_Changed})
     end.
 
@@ -421,12 +421,12 @@ check_lock(Lock) ->
             Now = dict:from_list([]),
             case am_i_leader() of
                 true ->
-                    MyDCId = dc_meta_data_utilities:get_my_dc_id(),
-                    dets:insert(?DETS_FILE_NAME, {Lock, {{send, MyDCId, []}, {received, MyDCId, [{MyDCId, 1}]}}, Now}),
+                    MyDCId = dc_utilities:get_my_dc_id(),
+                    ok = dets:insert(?DETS_FILE_NAME, {Lock, {{send, MyDCId, []}, {received, MyDCId, [{MyDCId, 1}]}}, Now}),
                     true;
                 false ->
-                    MyDCId = dc_meta_data_utilities:get_my_dc_id(),
-                    dets:insert(?DETS_FILE_NAME, {Lock, {{send, MyDCId, []}, {received, MyDCId, []}}, Now}),
+                    MyDCId = dc_utilities:get_my_dc_id(),
+                    ok = dets:insert(?DETS_FILE_NAME, {Lock, {{send, MyDCId, []}, {received, MyDCId, []}}, Now}),
                     false
             end;
         {error, Reason} ->
@@ -438,8 +438,8 @@ check_lock(Lock) ->
 %% Uses the ordering of orddict to decide the leader (the first key)
 -spec am_i_leader() -> boolean().
 am_i_leader() ->
-    MyDCId = dc_meta_data_utilities:get_my_dc_id(),
-    OtherDCDescriptors = dc_meta_data_utilities:get_dc_descriptors(),
+    MyDCId = dc_utilities:get_my_dc_id(),
+    OtherDCDescriptors = dc_meta_utilities:get_dc_descriptors(),
     AllDCIds = lists:foldl(fun(#descriptor{dcid = Id}, IdsList) ->
         [Id | IdsList]
     end, [], OtherDCDescriptors),
@@ -480,7 +480,7 @@ update_last_changed(Locks) ->
                 [{Current_Lock, Transfer_History, Old_Snapshot}] ->
                     {ok, Now} = get_snapshot_time(),
                     New_Snapshot = vectorclock:max([Now, Old_Snapshot]),
-                    dets:insert(?DETS_FILE_NAME, {Current_Lock, Transfer_History, New_Snapshot}),
+                    ok = dets:insert(?DETS_FILE_NAME, {Current_Lock, Transfer_History, New_Snapshot}),
                     ok;
                 [] ->
                     AccIn
@@ -493,8 +493,8 @@ update_last_changed(Locks) ->
 get_snapshot_time() ->
     Now = dc_utilities:now_microsec() - ?OLD_SS_MICROSEC,
     {ok, VecSnapshotTime} = ?DC_UTIL:get_stable_snapshot(),
-    DcId = ?DC_META_UTIL:get_my_dc_id(),
-    SnapshotTime = vectorclock:set_clock_of_dc(DcId, Now, VecSnapshotTime),
+    DcId = ?DC_UTIL:get_my_dc_id(),
+    SnapshotTime = vectorclock:set(DcId, Now, VecSnapshotTime),
     {ok, SnapshotTime}.
 % ===================================================================
 % Handling remote requests
@@ -503,7 +503,7 @@ get_snapshot_time() ->
 %% Returns an ordered list of all other DCs
 -spec other_dcs_list() -> [dcid()].
 other_dcs_list() ->
-    MyDCId = dc_meta_data_utilities:get_my_dc_id(),
+    MyDCId = dc_utilities:get_my_dc_id(),
     OtherDCDescriptors = dc_meta_data_utilities:get_dc_descriptors(),
     OtherDCIds = lists:foldl(fun(#descriptor{dcid = Id}, IdsList) ->
         case Id == MyDCId of
@@ -571,7 +571,7 @@ handle_cast({release_locks, TxId}, #state{local_locks = Local_Locks} = State) ->
 %% Stores in dets_ref how often the sender send the Lock to this DC
 handle_cast({remote_send_lock, {Lock, Amount, Snapshot, From, MyDCID1}}, State) ->
     %lager:info("handle_cast({remote_send_lock,~w,~w,~w,~w},state)~n",[Lock,Amount,From,MyDCID1]),
-    MyDCID2 = dc_meta_data_utilities:get_my_dc_id(),
+    MyDCID2 = dc_utilities:get_my_dc_id(),
     case MyDCID1 == MyDCID2 of
         true ->
             received_lock(Lock, From, Amount, Snapshot),
@@ -626,7 +626,7 @@ handle_call({get_locks, TxId, Locks}, _From, #state{local_locks = Local_Locks} =
 
 %% Periodically transfers locks requested by other DCs to them, if they are currently not used
 handle_info(transfer_periodic, #state{lock_requests = Old_Lock_Requests, local_locks = Local_Locks, transfer_timer = OldTimer} = State) ->
-    erlang:cancel_timer(OldTimer),
+    _ = erlang:cancel_timer(OldTimer),
     Clean_Lock_Requests = clear_old_lock_requests(Old_Lock_Requests, ?LOCK_REQUEST_TIMEOUT),
     Clear_Local_Locks = remove_old_required_locks(Local_Locks, ?LOCK_REQUIRED_TIMEOUT),
     %lager:info("handle_info({transfer_periodic},clear_local_locks=~w,clear_lock_requests =~w ~n",[Clear_Local_Locks,Clean_Lock_Requests]),
@@ -640,7 +640,7 @@ handle_info(transfer_periodic, #state{lock_requests = Old_Lock_Requests, local_l
     {noreply, State#state{transfer_timer = NewTimer, local_locks = Clear_Local_Locks, lock_requests = New_Lock_Requests_Value}}.
 
 terminate(_Reason, _State) ->
-    dets:close(?DETS_FILE_NAME),
+    ok = dets:close(?DETS_FILE_NAME),
     ok.
 
 code_change(_OldVsn, State, _Extra) ->

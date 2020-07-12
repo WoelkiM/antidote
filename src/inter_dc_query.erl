@@ -40,6 +40,7 @@
 -behaviour(gen_server).
 -include("antidote.hrl").
 -include("inter_dc_repl.hrl").
+-include_lib("kernel/include/logger.hrl").
 
 %% API
 -export([
@@ -73,7 +74,7 @@
 %%          the second is a #request_cache_entry{} record
 %%          Note that the function should not perform anywork, instead just send
 %%%         the work to another thread, otherwise it will block other messages
--spec perform_request(inter_dc_message_type(), pdcid(), binary(), fun((binary(), #request_cache_entry{})->ok))
+-spec perform_request(inter_dc_message_type(), pdcid(), binary(), fun((binary(), request_cache_entry()) -> ok))
              -> ok | unknown_dc.
 perform_request(RequestType, PDCID, BinaryRequest, Func) ->
     gen_server:call(?MODULE, {any_request, RequestType, PDCID, BinaryRequest, Func}).
@@ -89,7 +90,7 @@ del_dc(DCID) -> gen_server:call(?MODULE, {del_dc, DCID}, ?COMM_TIMEOUT).
 %%%% Server methods ---------------------------------------------------------+
 
 start_link() -> gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
-init([]) -> {ok, #state{sockets = dict:new(), req_id = 1, unanswered_queries = ets:new(queries, [set])}}.
+init([]) -> {ok, #state{sockets = dict:new(), req_id = 1, unanswered_queries = create_queries_table()}}.
 
 %% Handle the instruction to add a new DC.
 handle_call({add_dc, DCID, LogReaders}, _From, OldState) ->
@@ -121,7 +122,7 @@ handle_call({add_dc, DCID, LogReaders}, _From, OldState) ->
                                         false -> ok
                                     end
                                 end,
-                            ets:foldl(F, undefined, NewAccState#state.unanswered_queries),
+                            fold_queries_table(F, NewAccState#state.unanswered_queries),
                             {ResultAcc, NewAccState};
                         connection_error ->
                             {error, AccState}
@@ -136,13 +137,11 @@ handle_call({del_dc, DCID}, _From, State) ->
 
 %% Handle an instruction to ask a remote DC.
 handle_call({any_request, RequestType, PDCID, BinaryRequest, Func}, _From, State=#state{req_id=ReqId}) ->
-    %lager:info("handle_call({any_request,~w,~w,~w,~w},from,state)--Start--~n",[RequestType,PDCID,BinaryRequest,Func]),
     {DCID, Partition} = PDCID,
     case dict:find(DCID, State#state.sockets) of
     %% If socket found
     %% Find the socket that is responsible for this partition
     {ok, DCPartitionDict} ->
-        %lager:info("handle_call({any_request,~w,~w,~w,~w},from,state)--ok case--~n",[RequestType,PDCID,BinaryRequest,Func]),
         {SendPartition, Socket} = case dict:find(Partition, DCPartitionDict) of
                                       {ok, Soc} ->
                                           {Partition, Soc};
@@ -156,13 +155,9 @@ handle_call({any_request, RequestType, PDCID, BinaryRequest, Func}, _From, State
         VersionBinary = ?MESSAGE_VERSION,
         ReqIdBinary = inter_dc_txn:req_id_to_bin(ReqId),
         FullRequest = <<VersionBinary/binary, ReqIdBinary/binary, RequestType, BinaryRequest/binary>>,
-        %lager:info("handle_call({any_request,~w,~w,~w,~w},from,state)--ok case 2 --~n",[RequestType,PDCID,BinaryRequest,Func]),
         ok = erlzmq:send(Socket, FullRequest),
-        %lager:info("handle_call({any_request,~w,~w,~w,~w},from,state)--ok case 3 --~n",[RequestType,PDCID,BinaryRequest,Func]),
         RequestEntry = #request_cache_entry{request_type=RequestType, req_id_binary=ReqIdBinary,
                                             func=Func, pdcid={DCID, SendPartition}, binary_req=FullRequest},
-        %lager:info("handle_call({any_request,~w,~w,~w,~w},from,state)--ok case almost finisched--~n",[RequestType,PDCID,BinaryRequest,Func]),
-        %lager:info("handle_call({any_request,~w,~w,~w,~w},from,state)--ok case finisched--~n",[RequestType,PDCID,BinaryRequest,Func]),
         {reply, ok, req_sent(ReqIdBinary, RequestEntry, State)};
     %% If socket not found
     _ -> {reply, unknown_dc, State}
@@ -177,24 +172,22 @@ close_dc_sockets(DCPartitionDict) ->
 %% Handle a response from any of the connected sockets
 %% Possible improvement - disconnect sockets unused for a defined period of time.
 handle_info({zmq, _Socket, BinaryMsg, _Flags}, State=#state{unanswered_queries=Table}) ->
-    %lager:info("handle_info(zmq)--start--~n",[]),
     <<ReqIdBinary:?REQUEST_ID_BYTE_LENGTH/binary, RestMsg/binary>>
     = binary_utilities:check_message_version(BinaryMsg),
     %% Be sure this is a request from this socket
-    case ets:lookup(Table, ReqIdBinary) of
-        [{ReqIdBinary, CacheEntry=#request_cache_entry{request_type=RequestType, func=Func}}] ->
+    case get_request(Table, ReqIdBinary) of
+        {ok, CacheEntry=#request_cache_entry{request_type=RequestType, func=Func}} ->
             case RestMsg of
                 <<RequestType, RestBinary/binary>> ->
                     Func(RestBinary, CacheEntry);
                 Other ->
-                    lager:error("Received unknown reply: ~p", [Other])
+                    ?LOG_ERROR("Received unknown reply: ~p", [Other])
             end,
             %% Remove the request from the list of unanswered queries.
-            true = ets:delete(Table, ReqIdBinary);
-        [] ->
-            lager:error("Got a bad (or repeated) request id: ~p", [ReqIdBinary])
+            true = delete_request(Table, ReqIdBinary);
+        not_found ->
+            ?LOG_ERROR("Got a bad (or repeated) request id: ~p", [ReqIdBinary])
     end,
-    %lager:info("handle_info(zmq)--End--~n",[]),
     {noreply, State}.
 
 terminate(_Reason, State) ->
@@ -217,13 +210,13 @@ del_dc(DCID, State) ->
 
 %% Saves the request in the state, so it can be resent if the DC was disconnected.
 req_sent(ReqIdBinary, RequestEntry, State=#state{unanswered_queries=Table, req_id=OldReq}) ->
-    true = ets:insert(Table, {ReqIdBinary, RequestEntry}),
+    true = insert_request(Table, ReqIdBinary, RequestEntry),
     State#state{req_id=(OldReq+1)}.
 
 %% A node is a list of addresses because it can have multiple interfaces
 %% this just goes through the list and connects to the first interface that works
 connect_to_node([]) ->
-    lager:error("Unable to subscribe to DC log reader"),
+    ?LOG_ERROR("Unable to subscribe to DC log reader"),
     connection_error;
 connect_to_node([Address| Rest]) ->
     %% Test the connection
@@ -248,4 +241,35 @@ connect_to_node([Address| Rest]) ->
             {ok, Socket};
         _ ->
             connect_to_node(Rest)
+    end.
+
+%%%===================================================================
+%%%  Ets tables
+%%%
+%%%  unanswered_queries_table:
+%%%===================================================================
+
+-spec create_queries_table() -> ets:tid().
+create_queries_table() ->
+    ets:new(queries, [set]).
+
+-spec fold_queries_table(fun(), ets:tid()) -> term().
+fold_queries_table(F, Table) ->
+    ets:foldl(F, undefined, Table).
+
+-spec insert_request(ets:tid(), binary(), request_cache_entry()) -> true.
+insert_request(Table, ReqIdBinary, RequestEntry) ->
+    ets:insert(Table, {ReqIdBinary, RequestEntry}).
+
+-spec delete_request(ets:tid(), binary()) -> true.
+delete_request(Table, ReqIdBinary) ->
+    ets:delete(Table, ReqIdBinary).
+
+-spec get_request(ets:tid(), binary()) -> not_found | {ok, request_cache_entry()}.
+get_request(Table, ReqIdBinary) ->
+    case ets:lookup(Table, ReqIdBinary) of
+        [] ->
+            not_found;
+        [{ReqIdBinary, Val}] ->
+            {ok, Val}
     end.

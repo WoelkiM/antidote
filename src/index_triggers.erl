@@ -35,7 +35,6 @@
 -module(index_triggers).
 
 -include("querying.hrl").
-
 -define(MAP_UPD(ColName, ColType, Operation, Value), {{ColName, ColType}, {Operation, Value}}).
 -define(INDEX_UPD(TableName, IndexName, EntryKey, EntryValue), {TableName, IndexName, EntryKey, EntryValue}).
 -define(INDEX_OPERATION, update).
@@ -54,16 +53,16 @@ create_index_hooks(Updates, _TxId) when is_list(Updates) ->
         ?OBJECT_UPDATE(Key, Type, Bucket, _Op, _Param) = ObjUpdate,
         case update_type({Key, Type, Bucket}) of
             ?TABLE_UPD_TYPE ->
-                case antidote_hooks:has_hook(pre_commit, Bucket) of
-                    true -> ok;
-                    false -> antidote_hooks:register_pre_hook(Bucket, ?MODULE, index_update_hook)
+                _ = case antidote_hooks:get_hooks(pre_commit, Bucket) of
+                    undefined -> antidote_hooks:register_pre_hook(Bucket, ?MODULE, index_update_hook);
+                    _ -> ok
                 end,
 
                 lists:append(UpdAcc, []);
             ?RECORD_UPD_TYPE ->
-                case antidote_hooks:has_hook(pre_commit, Bucket) of
-                    true -> ok;
-                    false -> antidote_hooks:register_pre_hook(Bucket, ?MODULE, index_update_hook)
+                _ = case antidote_hooks:get_hooks(pre_commit, Bucket) of
+                    undefined -> antidote_hooks:register_pre_hook(Bucket, ?MODULE, index_update_hook);
+                    _ -> ok
                 end,
 
                 lists:append(UpdAcc, []);

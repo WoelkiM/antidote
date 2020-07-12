@@ -19,7 +19,7 @@
 %% -------------------------------------------------------------------
 -module(lock_mgr_SUITE).
 
--compile({parse_transform, lager_transform}).
+%-compile({parse_transform, lager_transform}).
 
 %% common_test callbacks
 -export([init_per_suite/1,
@@ -56,18 +56,18 @@
 -include_lib("common_test/include/ct.hrl").
 -include_lib("eunit/include/eunit.hrl").
 -include_lib("kernel/include/inet.hrl").
--include("../include/antidote.hrl").
--include("../include/inter_dc_repl.hrl").
+-include("../../include/antidote.hrl").
+-include("../../include/inter_dc_repl.hrl").
 
 
 
 
 
 init_per_suite(Config) ->
-    test_utils:at_init_testsuite(),
-    Clusters = test_utils:set_up_clusters_common(Config),
+    test_utils:init_single_dc(?MODULE, Config).%at_init_testsuite(),
+    %Clusters = test_utils:set_up_clusters_common(Config),
     %Nodes = hd(Clusters),
-    [{nodes, Clusters} | Config].
+    %[{nodes, Clusters} | Config].
 
 end_per_suite(Config) ->
     Config.

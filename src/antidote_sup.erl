@@ -68,16 +68,10 @@ init(_Args) ->
                             permanent, 5000, supervisor,
                             [clockSI_interactive_coord_sup]},
 
-    ClockSIReadSup = {clocksi_readitem_sup,
-                      {clocksi_readitem_sup, start_link, []},
-                      permanent, 5000, supervisor,
-                      [clocksi_readitem_sup]},
-
     MaterializerMaster = {materializer_vnode_master,
                           {riak_core_vnode_master,  start_link,
                            [materializer_vnode]},
                           permanent, 5000, worker, [riak_core_vnode_master]},
-
     QueryOptimizer = ?CHILD(query_optimizer, worker, []),
     IndexManager = ?CHILD(index_manager, worker, []),
     QueryingUtilsCoordSup = ?CHILD(querying_utils, worker, []),
@@ -85,6 +79,7 @@ init(_Args) ->
     BCounterManager = ?CHILD(bcounter_mgr, worker, []),
     LockManager = ?CHILD(lock_mgr, worker, []),
     LockManager_es = ?CHILD(lock_mgr_es, worker, []),
+
     ZMQContextManager = ?CHILD(zmq_context, worker, []),
     InterDcPub = ?CHILD(inter_dc_pub, worker, []),
     InterDcSub = ?CHILD(inter_dc_sub, worker, []),
@@ -97,12 +92,12 @@ init(_Args) ->
 
 
     MetaDataManagerSup = {meta_data_manager_sup,
-                          {meta_data_manager_sup, start_link, [stable]},
+                          {meta_data_manager_sup, start_link, [stable_time_functions]},
                           permanent, 5000, supervisor,
                           [meta_data_manager_sup]},
 
     MetaDataSenderSup = {meta_data_sender_sup,
-                         {meta_data_sender_sup, start_link, [stable_time_functions:export_funcs_and_vals()]},
+                         {meta_data_sender_sup, start_link, [[stable_time_functions]]},
                          permanent, 5000, supervisor,
                          [meta_data_sender_sup]},
 
@@ -118,32 +113,15 @@ init(_Args) ->
               type => supervisor,
               modules => [antidote_pb_sup]},
 
+    AntidoteStats = ?CHILD(antidote_stats, worker, []),
 
-    Config = [{mods, [{elli_prometheus, []}
-                     ]}
-             ],
-    MetricsPort = application:get_env(antidote, metrics_port, 3001),
-    ElliOpts = [{callback, elli_middleware}, {callback_args, Config}, {port, MetricsPort}],
-    Elli = {elli_server,
-            {elli, start_link, [ElliOpts]},
-            permanent,
-            5000,
-            worker,
-            [elli]},
-
-    StatsCollector = {
-                       antidote_stats_collector,
-                       {antidote_stats_collector, start_link, []},
-                       permanent, 5000, worker, [antidote_stats_collector]
-                     },
 
     {ok,
      {{one_for_one, 5, 10},
-      [StatsCollector,
+      [
        LoggingMaster,
        ClockSIMaster,
        ClockSIiTxCoordSup,
-       ClockSIReadSup,
        MaterializerMaster,
        ZMQContextManager,
        InterDcPub,
@@ -162,6 +140,8 @@ init(_Args) ->
        QueryOptimizer,
        IndexManager,
        QueryingUtilsCoordSup,
+
        LogResponseReaderSup,
        PbSup,
-       Elli]}}.
+       AntidoteStats
+       ]}}.

@@ -16,6 +16,7 @@
 -define(LOCK_MGR_SEND,8).
 -define(LOCK_MGR_ES_REQUEST,9).
 -define(LOCK_MGR_ES_SEND,10).
+
 %% The number of bytes a parition id is in a message
 -define(PARTITION_BYTE_LENGTH, 20).
 %% the number of bytes a message id is
@@ -25,4 +26,4 @@
 %% Needed for dialyzer, must be the size of the request id bits plus the version bits
 -define(MESSAGE_HEADER_BIT_LENGTH, 32).
 
--type inter_dc_message_type() :: ?CHECK_UP_MSG | ?LOG_READ_MSG | ?OK_MSG | ?ERROR_MSG | ?BCOUNTER_REQUEST | ?LOCK_MGR_REQUEST | ?LOCK_MGR_SEND | ?LOCK_MGR_ES_REQUEST | ?LOCK_MGR_ES_SEND.
+-type inter_dc_message_type() :: ?CHECK_UP_MSG | ?LOG_READ_MSG | ?OK_MSG | ?ERROR_MSG | ?BCOUNTER_REQUEST| ?LOCK_MGR_REQUEST | ?LOCK_MGR_SEND | ?LOCK_MGR_ES_REQUEST | ?LOCK_MGR_ES_SEND.

@@ -43,7 +43,7 @@
 -else.
 -define(LOG_UTIL, log_utilities).
 -endif.
-
+-include_lib("kernel/include/logger.hrl").
 -include("antidote.hrl").
 -include("querying.hrl").
 -include("lock_mgr.hrl").

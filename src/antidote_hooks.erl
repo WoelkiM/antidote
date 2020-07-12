@@ -58,24 +58,21 @@
 -module(antidote_hooks).
 
 -include("antidote.hrl").
+-include_lib("kernel/include/logger.hrl").
 
 -include_lib("eunit/include/eunit.hrl").
 
 -export([register_pre_hook/3,
          register_post_hook/3,
          get_hooks/2,
-         has_hook/2,
          unregister_hook/2,
-         execute_pre_commit_hook/1,
          execute_pre_commit_hook/3,
-         execute_pre_commit_hook/4,
-         execute_post_commit_hook/1,
          execute_post_commit_hook/3
         ]).
 
 -ifdef(TEST).
 -export([test_commit_hook/1,
-         test_increment_hook/2,
+         test_increment_hook/1,
          test_post_hook/1]).
 -endif.
 
@@ -83,22 +80,20 @@
 -define(PREFIX_POST, {commit_hooks, post}).
 
 -spec register_post_hook(bucket(), module_name(), function_name()) ->
-      ok | {error, reason()}.
+      ok | {error, function_not_exported}.
 register_post_hook(Bucket, Module, Function) ->
     register_hook(?PREFIX_POST, Bucket, Module, Function).
 
 -spec register_pre_hook(bucket(), module_name(), function_name()) ->
-      ok | {error, reason()}.
+      ok | {error, function_not_exported}.
 register_pre_hook(Bucket, Module, Function) ->
     register_hook(?PREFIX_PRE, Bucket, Module, Function).
 
 %% Overwrites the previous commit hook
 register_hook(Prefix, Bucket, Module, Function) ->
-    IsExported = erlang:function_exported(Module, Function, 1)
-        orelse erlang:function_exported(Module, Function, 2), % with a transaction parameter
-    case IsExported of
+    case erlang:function_exported(Module, Function, 1) of
         true ->
-            riak_core_metadata:put(Prefix, Bucket, {Module, Function}),
+            stable_meta_data_server:broadcast_meta_data({Prefix, Bucket}, {Module, Function}),
             ok;
         false ->
             {error, function_not_exported}
@@ -106,23 +101,25 @@ register_hook(Prefix, Bucket, Module, Function) ->
 
 -spec unregister_hook(pre_commit | post_commit, bucket()) -> ok.
 unregister_hook(pre_commit, Bucket) ->
-    riak_core_metadata:delete(?PREFIX_PRE, Bucket);
-
+    stable_meta_data_server:broadcast_meta_data({?PREFIX_PRE, Bucket}, undefined);
 unregister_hook(post_commit, Bucket) ->
-    riak_core_metadata:delete(?PREFIX_POST, Bucket).
+    stable_meta_data_server:broadcast_meta_data({?PREFIX_POST, Bucket}, undefined).
 
 get_hooks(pre_commit, Bucket) ->
-    riak_core_metadata:get(?PREFIX_PRE, Bucket);
-
+    R = stable_meta_data_server:read_meta_data({?PREFIX_PRE, Bucket}),
+    case R of
+        {ok, Hooks} -> Hooks;
+        error -> undefined
+    end;
 get_hooks(post_commit, Bucket) ->
-    riak_core_metadata:get(?PREFIX_POST, Bucket).
-
-has_hook(PreOrPost, Bucket)
-    when is_atom(PreOrPost) ->
-    get_hooks(PreOrPost, Bucket) =/= undefined.
+    R = stable_meta_data_server:read_meta_data({?PREFIX_POST, Bucket}),
+    case R of
+        {ok, Hooks} -> Hooks;
+        error -> undefined
+    end.
 
 -spec execute_pre_commit_hook(term(), type(), op_param()) ->
-        {term(), type(), op_param()} | [{term(), type(), op_param()}] | {error, reason()}.
+        {term(), type(), op_param()} | {error, reason()}.
 execute_pre_commit_hook({Key, Bucket}, Type, Param) ->
     Hook = get_hooks(pre_commit, Bucket),
     case Hook of
@@ -138,30 +135,6 @@ execute_pre_commit_hook({Key, Bucket}, Type, Param) ->
 %% The following is kept to be backward compatible with the old
 %% interface where buckets are not used
 execute_pre_commit_hook(Key, Type, Param) ->
-    {Key, Type, Param}.
--spec execute_pre_commit_hook([{term(), type(), op_param()}]) ->
-    [{term(), type(), op_param()} | [{term(), type(), op_param()}] | {error, reason()}].
-execute_pre_commit_hook(Updates) when is_list(Updates) ->
-    lists:map(fun(Upd) ->
-        {{Key, Bucket}, Type, Param} = Upd,
-        execute_pre_commit_hook({Key, Bucket}, Type, Param)
-    end, Updates).
-
--spec execute_pre_commit_hook(term(), type(), op_param(), txid() | {term(), term()}) ->
-    {term(), type(), op_param()} | [{term(), type(), op_param()}] | {error, reason()}.
-execute_pre_commit_hook({Key, Bucket}, Type, Param, Transaction) ->
-    Hook = get_hooks(pre_commit, Bucket),
-    case Hook of
-        undefined ->
-            {{Key, Bucket}, Type, Param};
-        {Module, Function} ->
-            try Module:Function({{Key, Bucket}, Type, Param}, Transaction) of
-                {ok, Res} -> Res
-            catch
-                _:Reason -> {error, {pre_commit_hook, Reason}}
-            end
-    end;
-execute_pre_commit_hook(Key, Type, Param, _TxId) ->
     {Key, Type, Param}.
 
 -spec execute_post_commit_hook(term(), type(), op_param()) ->
@@ -181,22 +154,14 @@ execute_post_commit_hook({Key, Bucket}, Type, Param) ->
 execute_post_commit_hook(Key, Type, Param) ->
     {Key, Type, Param}.
 
--spec execute_post_commit_hook([{term(), type(), op_param()}]) ->
-    [{term(), type(), op_param()} | [{term(), type(), op_param()}] | {error, reason()}].
-execute_post_commit_hook(Updates) when is_list(Updates) ->
-    lists:map(fun(Upd) ->
-        {{Key, Bucket}, Type, Param} = Upd,
-        execute_post_commit_hook({Key, Bucket}, Type, Param)
-    end, Updates).
-
 -ifdef(TEST).
 %% The following functions here provide commit hooks for the testing (test/commit_hook_SUITE).
 
 test_commit_hook(Object) ->
-    lager:info("Executing test commit hook"),
+    ?LOG_INFO("Executing test commit hook"),
     {ok, Object}.
 
-test_increment_hook({{Key, Bucket}, antidote_crdt_counter_pn, {increment, 1}}, _Tx) ->
+test_increment_hook({{Key, Bucket}, antidote_crdt_counter_pn, {increment, 1}}) ->
     {ok, {{Key, Bucket}, antidote_crdt_counter_pn, {increment, 2}}}.
 
 test_post_hook({{Key, Bucket}, Type, OP}) ->

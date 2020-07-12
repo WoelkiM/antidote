@@ -19,7 +19,7 @@
 %% -------------------------------------------------------------------
 -module(lock_mgr_pb_SUITE).
 
--compile({parse_transform, lager_transform}).
+%-compile({parse_transform, lager_transform}).
 
 %% common_test callbacks
 -export([%% suite/0,
